@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import random
 import logging
+import json
 
 from typing import Union, List
 
@@ -17,15 +18,20 @@ from ask_sdk_model.services.monetization import (
 from ask_sdk_model.interfaces.monetization.v1 import PurchaseResult
 from ask_sdk_model import Response, IntentRequest
 from ask_sdk_model.interfaces.connections import SendRequestDirective
+from ask_sdk_core.serialize import DefaultSerializer
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
+ 
 # Data for the skill
 
 # Static list of facts across 3 categories that serve as
 # the free and premium content served by the Skill
 all_facts = [
+    {"type": "free", "fact": "There are 365 days in a year, except leap years, which have 366 days."},
+    {"type": "free", "fact": "What goes up, must come down.  Except when it doesn\'t."},
+    {"type": "free", "fact": "Two wrongs don\'t make a right, but three lefts do."},
+    {"type": "free", "fact": "There are 24 hours in a day."},
     {
         "type": "science",
         "fact": "There is enough DNA in an average person's body to stretch from the sun to Pluto and back — 17 times."
@@ -148,19 +154,52 @@ skill_name = "Premium Facts Sample"
 
 # Utility functions
 
+
 def get_all_entitled_products(in_skill_product_list):
     """Get list of in-skill products in ENTITLED state."""
     # type: (List[InSkillProduct]) -> List[InSkillProduct]
     entitled_product_list = [
         l for l in in_skill_product_list if (
-                l.entitled == EntitledState.ENTITLED)]
+            l.entitled == EntitledState.ENTITLED)]
     return entitled_product_list
+
+def get_filtered_facts(facts, session_attributes):
+    """Filters facts to only those to which the user is entitled."""
+    # type: (List, SessionAttributes -> List)
+
+    # always include the free facts
+    entitled_types = ["free"]
+
+    if "entitledProducts" in session_attributes:
+        entitled_products = session_attributes["entitledProducts"]
+        # there is at least one entitled product
+        logger.info(entitled_products)
+        subscription=[
+            l for l in entitled_products
+            if l.reference_name == "all_access"]
+        if is_entitled(subscription):
+            # is subscribed for all access, so don't filter
+            return facts
+
+        # build list of purchased categories
+        for p in entitled_products:
+            logger.info('checking if {} is entitled'.format(p.reference_name))
+            if p.entitled == EntitledState.ENTITLED:
+                entitled_types.append(p.reference_name.split("_")[0])
+
+    # filter based on list of types
+    filtered_facts=[
+        l for l in all_facts if l.get("type") in entitled_types
+    ]
+
+    return filtered_facts
 
 def get_random_from_list(facts):
     """Return the fact message from randomly chosen list element."""
     # type: (List) -> str
     fact_item = random.choice(facts)
     return fact_item.get("fact")
+
 
 def get_random_yes_no_question():
     """Return random question for YES/NO answering."""
@@ -170,11 +209,13 @@ def get_random_yes_no_question():
         "Do you want to hear another fact?"]
     return random.choice(questions)
 
+
 def get_random_goodbye():
     """Return random goodbye message."""
     # type: () -> str
     goodbyes = ["OK.  Goodbye!", "Have a great day!", "Come back again soon!"]
     return random.choice(goodbyes)
+
 
 def get_speakable_list_of_products(entitled_products_list):
     """Return product list in speakable form."""
@@ -189,6 +230,7 @@ def get_speakable_list_of_products(entitled_products_list):
         speech = ", ".join(product_names)
     return speech
 
+
 def get_resolved_value(request, slot_name):
     """Resolve the slot name from the request using resolutions."""
     # type: (IntentRequest, str) -> Union[str, None]
@@ -198,6 +240,7 @@ def get_resolved_value(request, slot_name):
     except (AttributeError, ValueError, KeyError, IndexError):
         return None
 
+
 def get_spoken_value(request, slot_name):
     """Resolve the slot to the spoken value."""
     # type: (IntentRequest, str) -> Union[str, None]
@@ -206,16 +249,19 @@ def get_spoken_value(request, slot_name):
     except (AttributeError, ValueError, KeyError, IndexError):
         return None
 
+
 def is_product(product):
     """Is the product list not empty."""
     # type: (List) -> bool
     return bool(product)
+
 
 def is_entitled(product):
     """Is the product in ENTITLED state."""
     # type: (List) -> bool
     return (is_product(product) and
             product[0].entitled == EntitledState.ENTITLED)
+
 
 def in_skill_product_response(handler_input):
     """Get the In-skill product response from monetization service."""
@@ -224,7 +270,15 @@ def in_skill_product_response(handler_input):
     ms = handler_input.service_client_factory.get_monetization_service()
     return ms.get_in_skill_products(locale)
 
+def is_new_session(request_envelope):
+    """Checks to see if the request is the first of a session"""
+    # type: (RequestEnvelope) -> bool
+    if request_envelope.session.new == True:
+        return True
+    return False
+
 # Skill Handlers
+
 
 class LaunchRequestHandler(AbstractRequestHandler):
     """Handler for Launch Requests.
@@ -234,6 +288,7 @@ class LaunchRequestHandler(AbstractRequestHandler):
     to the user.
     User says: Alexa, open <skill_name>.
     """
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
         return is_request_type("LaunchRequest")(handler_input)
@@ -241,68 +296,73 @@ class LaunchRequestHandler(AbstractRequestHandler):
     def handle(self, handler_input):
         # type: (HandlerInput) -> Response
         logger.info("In LaunchRequestHandler")
-
-        in_skill_response = in_skill_product_response(handler_input)
-        if isinstance(in_skill_response, InSkillProductsResponse):
-            entitled_prods = get_all_entitled_products(in_skill_response.in_skill_products)
-            if entitled_prods:
-                speech = (
-                    "Welcome to {}. You currently own {} products. "
-                    "To hear a random fact, you could say, 'Tell me a fact', "
-                    "or you can ask for a specific category you have "
-                    "purchased, for example, say 'Tell me a science fact'. "
-                    "To know what else you can buy, say, 'What can i buy?'. "
-                    "So, what can I help you with?").format(
-                        skill_name,
-                        get_speakable_list_of_products(entitled_prods))
-            else:
-                logger.info("No entitled products")
-                speech = (
-                    "Welcome to {}. To hear a random fact you can say "
-                    "'Tell me a fact', or to hear about the premium categories "
-                    "for purchase, say 'What can I buy'. For help, say , "
-                    "'Help me'... So, what can I help you with?"
-                ).format(skill_name)
-            reprompt = "I didn't catch that. What can I help you with?"
+        
+        reprompt_output = "What can I help you with?"
+        if "entitledProducts" in handler_input.attributes_manager.session_attributes:
+            entitled_prods = handler_input.attributes_manager.session_attributes["entitledProducts"]
+            speak_output = (
+                "Welcome to {}. You currently own {} products. "
+                "To hear a random fact, you could say, 'Tell me a fact', "
+                "or you can ask for a specific category you have "
+                "purchased, for example, say 'Tell me a science fact'. "
+                "To know what else you can buy, say, 'What can i buy?'. "
+                "So, what can I help you with?"
+            ).format(
+                skill_name,
+                get_speakable_list_of_products(entitled_prods)
+            )
         else:
-            logger.info("Error calling InSkillProducts API: {}".format(
-                in_skill_response.message))
-            speech = "Something went wrong in loading your purchase history."
-            reprompt = speech
+            logger.info("No entitled products")
+            speak_output = (
+                "Welcome to {}. To hear a random fact you can say "
+                "'Tell me a fact', or to hear about the premium categories "
+                "for purchase, say 'What can I buy'. For help, say , "
+                "'Help me'... So, what can I help you with?"
+            ).format(
+                skill_name
+            )
 
-        return handler_input.response_builder.speak(speech).ask(
-            reprompt).response
+        return (
+            handler_input.response_builder
+                .speak(speak_output)
+                .ask(reprompt_output)
+                .response
+        )
 
-class GetFactHandler(AbstractRequestHandler):
-    """Handler for returning random fact to the user."""
-    def can_handle(self, handler_input):
-        # type: (HandlerInput) -> bool
-        return is_intent_name("GetFactIntent")(handler_input)
-
-    def handle(self, handler_input):
-        # type: (HandlerInput) -> Response
-        logger.info("In GetFactHandler")
-
-        fact_text = get_random_from_list(all_facts)
-        return handler_input.response_builder.speak(
-            "Here's your random fact: {} {}".format(
-                fact_text, get_random_yes_no_question())).ask(
-            get_random_yes_no_question()).response
 
 class YesHandler(AbstractRequestHandler):
-    """If the user says Yes, they want another fact."""
+    """Handler for returning random fact to the user. If the user says Yes, they want a fact."""
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
-        return is_intent_name("AMAZON.YesIntent")(handler_input)
+        return (is_intent_name("AMAZON.YesIntent")(handler_input) or
+                is_intent_name("GetRandomFactIntent")(handler_input))
 
     def handle(self, handler_input):
         # type: (HandlerInput) -> Response
         logger.info("In YesHandler")
-        return GetFactHandler().handle(handler_input)
 
+        filtered_facts = get_filtered_facts(all_facts, handler_input.attributes_manager.session_attributes)
+
+        fact_text = get_random_from_list(filtered_facts)
+        return (
+            handler_input.response_builder
+                .speak(
+                    "Here's your random fact: {} {}"
+                    .format(
+                        fact_text,
+                        get_random_yes_no_question()
+                    )
+                )
+                .ask(
+                    get_random_yes_no_question()
+                )
+                .response
+        )
 
 class NoHandler(AbstractRequestHandler):
     """If the user says No, then the skill should be exited."""
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
         return is_intent_name("AMAZON.NoIntent")(handler_input)
@@ -311,8 +371,12 @@ class NoHandler(AbstractRequestHandler):
         # type: (HandlerInput) -> Response
         logger.info("In NoHandler")
 
-        return handler_input.response_builder.speak(
-            get_random_goodbye()).set_should_end_session(True).response
+        return (
+            handler_input.response_builder
+                .speak(get_random_goodbye())
+                .set_should_end_session(True)
+                .response
+        )
 
 class GetCategoryFactHandler(AbstractRequestHandler):
     """Handler for providing category specific facts to the user.
@@ -323,6 +387,7 @@ class GetCategoryFactHandler(AbstractRequestHandler):
     then a custom message to choose valid categories is provided, rather
     than throwing an error.
     """
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
         return is_intent_name("GetCategoryFactIntent")(handler_input)
@@ -331,56 +396,64 @@ class GetCategoryFactHandler(AbstractRequestHandler):
         # type: (HandlerInput) -> Response
         logger.info("In GetCategoryFactHandler")
 
-        fact_category = get_resolved_value(
+        fact_category=get_resolved_value(
             handler_input.request_envelope.request, 'factCategory')
         logger.info("FACT CATEGORY = {}".format(fact_category))
 
         if fact_category is not None:
             # If there was an entity resolution match for this slot value
-            category_facts = [
+            category_facts=[
                 l for l in all_facts if l.get("type") == fact_category]
         else:
             # If there was not an entity resolution match for this slot value
-            category_facts = []
+            category_facts=[]
 
         if not category_facts:
-            slot_value = get_spoken_value(
+            slot_value=get_spoken_value(
                 handler_input.request_envelope.request, "factCategory")
             if slot_value is not None:
-                speak_prefix = "I heard you say {}.".format(slot_value)
+                speak_prefix="I heard you say {}.".format(slot_value)
             else:
-                speak_prefix = ""
-            speech = (
+                speak_prefix=""
+            speech=(
                 "{} I don't have facts for that category.  You can ask for "
                 "science, space or history facts.  Which one would you "
-                "like?".format(speak_prefix))
-            reprompt = (
+                "like?"
+                .format(speak_prefix))
+            reprompt=(
                 "Which fact category would you like?  I have science, space, "
                 "or history.")
-            return handler_input.response_builder.speak(speech).ask(
-                reprompt).response
+            return (
+                handler_input.response_builder
+                    .speak(speech)
+                    .ask(reprompt)
+                    .response
+            )
         else:
-            in_skill_response = in_skill_product_response(handler_input)
+            in_skill_response=in_skill_product_response(handler_input)
             if in_skill_response:
-                subscription = [
+                subscription=[
                     l for l in in_skill_response.in_skill_products
                     if l.reference_name == "all_access"]
-                category_product = [
+                category_product=[
                     l for l in in_skill_response.in_skill_products
                     if l.reference_name == "{}_pack".format(fact_category)]
 
                 if is_entitled(subscription) or is_entitled(category_product):
-                    speech = "Here's your {} fact: {} {}".format(
+                    speech="Here's your {} fact: {} {}".format(
                         fact_category, get_random_from_list(category_facts),
                         get_random_yes_no_question())
-                    reprompt = get_random_yes_no_question()
+                    reprompt=get_random_yes_no_question()
                     return handler_input.response_builder.speak(speech).ask(
                         reprompt).response
                 else:
-                    upsell_msg = (
+                    upsell_msg=(
                         "You don't currently own the {} pack. {} "
-                        "Want to learn more?").format(
-                        fact_category, category_product[0].summary)
+                        "Want to learn more?"
+                        ).format(
+                            fact_category,
+                            category_product[0].summary
+                        )
                     return handler_input.response_builder.add_directive(
                         SendRequestDirective(
                             name="Upsell",
@@ -400,6 +473,7 @@ class ShoppingHandler(AbstractRequestHandler):
     discover what products are available for purchase in-skill.
     User says: Alexa, ask Premium facts what can I buy.
     """
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
         return is_intent_name("ShoppingIntent")(handler_input)
@@ -409,28 +483,34 @@ class ShoppingHandler(AbstractRequestHandler):
         logger.info("In ShoppingHandler")
 
         # Inform the user about what products are available for purchase
-        in_skill_response = in_skill_product_response(handler_input)
+        in_skill_response=in_skill_product_response(handler_input)
         if in_skill_response:
-            purchasable = [l for l in in_skill_response.in_skill_products
+            purchasable=[l for l in in_skill_response.in_skill_products
                            if l.entitled == EntitledState.NOT_ENTITLED and
                            l.purchasable == PurchasableState.PURCHASABLE]
 
             if purchasable:
-                speech = ("Products available for purchase at this time are {}.  "
+                speech=("Products available for purchase at this time are {}.  "
                           "To learn more about a product, say 'Tell me more "
                           "about' followed by the product name.  If you are ready "
                           "to buy say 'Buy' followed by the product name. So what "
-                          "can I help you with?").format(
-                    get_speakable_list_of_products(purchasable))
+                          "can I help you with?"
+                        ).format(
+                            get_speakable_list_of_products(purchasable)
+                        )
             else:
-                speech = ("There are no more products to buy. To hear a "
+                speech=("There are no more products to buy. To hear a "
                           "random fact, you could say, 'Tell me a fact', or "
                           "you can ask for a specific category you have "
                           "purchased, for example, say 'Tell me a science "
                           "fact'. So what can I help you with?")
-            reprompt = "I didn't catch that. What can I help you with?"
-            return handler_input.response_builder.speak(speech).ask(
-                reprompt).response
+            reprompt="I didn't catch that. What can I help you with?"
+            return (
+                handler_input.response_builder
+                    .speak(speech)
+                    .ask(reprompt)
+                    .response
+            )
 
 
 class ProductDetailHandler(AbstractRequestHandler):
@@ -440,6 +520,7 @@ class ProductDetailHandler(AbstractRequestHandler):
     corresponding product detail message.
     User says: Alexa, tell me about <category> pack
     """
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
         return is_intent_name("ProductDetailIntent")(handler_input)
@@ -447,49 +528,58 @@ class ProductDetailHandler(AbstractRequestHandler):
     def handle(self, handler_input):
         # type: (HandlerInput) -> Response
         logger.info("In ProductDetailHandler")
-        in_skill_response = in_skill_product_response(handler_input)
+        in_skill_response=in_skill_product_response(handler_input)
 
         if in_skill_response:
-            product_category = get_resolved_value(
+            product_category=get_resolved_value(
                 handler_input.request_envelope.request, "productCategory")
-            all_access = get_resolved_value(
+            all_access=get_resolved_value(
                 handler_input.request_envelope.request, "allAccess")
 
             if all_access is not None:
-                product_category = "all_access"
+                product_category="all_access"
 
             # No entity resolution match
             if product_category is None:
-                speech = ("I don't think we have a product by that name.  "
+                speech=("I don't think we have a product by that name.  "
                           "Can you try again?")
-                reprompt = "I didn't catch that. Can you try again?"
-                return handler_input.response_builder.speak(speech).ask(
-                    reprompt).response
+                reprompt="I didn't catch that. Can you try again?"
+                return (
+                    handler_input.response_builder
+                        .speak(speech)
+                        .ask(reprompt)
+                        .response
+                )
             else:
                 if product_category != "all_access":
                     product_category += "_pack"
 
-                product = [l for l in in_skill_response.in_skill_products
+                product=[l for l in in_skill_response.in_skill_products
                            if l.reference_name == product_category]
                 if is_product(product):
-                    speech = ("{}.  To buy it, say Buy {}".format(
+                    speech=("{}.  To buy it, say Buy {}".format(
                         product[0].summary, product[0].name))
-                    reprompt = (
+                    reprompt=(
                         "I didn't catch that. To buy {}, say Buy {}".format(
                             product[0].name, product[0].name))
                 else:
-                    speech = ("I don't think we have a product by that name.  "
+                    speech=("I don't think we have a product by that name.  "
                               "Can you try again?")
-                    reprompt = "I didn't catch that. Can you try again?"
+                    reprompt="I didn't catch that. Can you try again?"
 
-                return handler_input.response_builder.speak(speech).ask(
-                    reprompt).response
+                return (
+                    handler_input.response_builder
+                        .speak(speech)
+                        .ask(reprompt)
+                        .response
+                )
 
 class BuyHandler(AbstractRequestHandler):
     """Handler for letting users buy the product.
 
     User says: Alexa, buy <category>.
     """
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
         return is_intent_name("BuyIntent")(handler_input)
@@ -499,18 +589,18 @@ class BuyHandler(AbstractRequestHandler):
         logger.info("In BuyHandler")
 
         # Inform the user about what products are available for purchase
-        in_skill_response = in_skill_product_response(handler_input)
+        in_skill_response=in_skill_product_response(handler_input)
         if in_skill_response:
-            product_category = get_resolved_value(
+            product_category=get_resolved_value(
                 handler_input.request_envelope.request, "productCategory")
 
             # No entity resolution match
             if product_category is None:
-                product_category = "all_access"
-            else:
+                product_category="all_access"
+            elif (product_category != "all_access"):
                 product_category += "_pack"
 
-            product = [l for l in in_skill_response.in_skill_products
+            product=[l for l in in_skill_response.in_skill_products
                        if l.reference_name == product_category]
             return handler_input.response_builder.add_directive(
                 SendRequestDirective(
@@ -523,12 +613,14 @@ class BuyHandler(AbstractRequestHandler):
                     token="correlationToken")
             ).response
 
+
 class CancelSubscriptionHandler(AbstractRequestHandler):
     """
     Following handler demonstrates how Skills would receive Cancel requests
     from customers and then trigger a cancel request to Alexa
     User says: Alexa, ask premium facts to cancel <product name>
     """
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
         return is_intent_name("CancelSubscriptionIntent")(handler_input)
@@ -537,18 +629,18 @@ class CancelSubscriptionHandler(AbstractRequestHandler):
         # type: (HandlerInput) -> Response
         logger.info("In CancelSubscriptionHandler")
 
-        in_skill_response = in_skill_product_response(handler_input)
+        in_skill_response=in_skill_product_response(handler_input)
         if in_skill_response:
-            product_category = get_resolved_value(
+            product_category=get_resolved_value(
                 handler_input.request_envelope.request, "productCategory")
 
             # No entity resolution match
             if product_category is None:
-                product_category = "all_access"
-            else:
+                product_category="all_access"
+            elif product_category != "all_access":
                 product_category += "_pack"
 
-            product = [l for l in in_skill_response.in_skill_products
+            product=[l for l in in_skill_response.in_skill_products
                        if l.reference_name == product_category]
             return handler_input.response_builder.add_directive(
                 SendRequestDirective(
@@ -561,74 +653,100 @@ class CancelSubscriptionHandler(AbstractRequestHandler):
                     token="correlationToken")
             ).response
 
+
 class BuyResponseHandler(AbstractRequestHandler):
     """This handles the Connections.Response event after a buy occurs."""
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
         return (is_request_type("Connections.Response")(handler_input) and
-                handler_input.request_envelope.request.name == "Buy")
+                (handler_input.request_envelope.request.name == "Buy" or
+                 handler_input.request_envelope.request.name == "Upsell"))
 
     def handle(self, handler_input):
         # type: (HandlerInput) -> Response
         logger.info("In BuyResponseHandler")
-        in_skill_response = in_skill_product_response(handler_input)
-        product_id = handler_input.request_envelope.request.payload.get(
+        in_skill_response=in_skill_product_response(handler_input)
+        product_id=handler_input.request_envelope.request.payload.get(
             "productId")
 
         if in_skill_response:
-            product = [l for l in in_skill_response.in_skill_products
+            product=[l for l in in_skill_response.in_skill_products
                        if l.product_id == product_id]
             logger.info("Product = {}".format(str(product)))
             if handler_input.request_envelope.request.status.code == "200":
-                speech = None
-                reprompt = None
-                purchase_result = handler_input.request_envelope.request.payload.get(
+                speech=None
+                reprompt=None
+                purchase_result=handler_input.request_envelope.request.payload.get(
                     "purchaseResult")
                 if purchase_result == PurchaseResult.ACCEPTED.value:
-                    category_facts = all_facts
+                    category_facts=all_facts
                     if product[0].reference_name != "all_access":
-                        category_facts = [l for l in all_facts if
+                        category_facts=[l for l in all_facts if
                                           l.get("type") ==
                                           product[0].reference_name.replace(
                                               "_pack", "")]
-                    speech = ("You have unlocked the {}.  Here is your {} "
+                    speech=("You have unlocked the {}.  Here is your {} "
                               "fact: {}  {}").format(
                         product[0].name,
                         product[0].reference_name.replace(
                             "_pack", "").replace("all_access", ""),
                         get_random_from_list(category_facts),
                         get_random_yes_no_question())
-                    reprompt = get_random_yes_no_question()
+                    reprompt=get_random_yes_no_question()
                 elif purchase_result in (
                         PurchaseResult.DECLINED.value,
                         PurchaseResult.ERROR.value,
                         PurchaseResult.NOT_ENTITLED.value):
-                    speech = ("Thanks for your interest in {}.  "
+                    if handler_input.request_envelope.request.name == "Buy":
+                        speech=("Thanks for your interest in {}.  "
                               "Would you like another random fact?".format(
-                        product[0].name))
-                    reprompt = "Would you like another random fact?"
+                                  product[0].name))
+                        reprompt="Would you like another random fact?"
+                    else:
+                        # Upsell
+                        logger.info("SessionAttributes: {}".format(handler_input.attributes_manager.session_attributes))
+
+                        facts = get_filtered_facts(all_facts, handler_input.attributes_manager.session_attributes)
+                        reprompt = get_random_yes_no_question()
+                        speech = (
+                            "OK. Here's a random fact: {} {}"
+                            .format(
+                                get_random_from_list(facts),
+                                reprompt
+                            )
+                        )
                 elif purchase_result == PurchaseResult.ALREADY_PURCHASED.value:
+                    # may have access to more than what was asked for, but give them a random
+                    # fact from the product they asked to buy
                     logger.info("Already purchased product")
-                    speech = " Do you want to hear a fact?"
-                    reprompt = "What can I help you with?"
+                    return YesHandler.handle(handler_input)
                 else:
                     # Invalid purchase result value
                     logger.info("Purchase result: {}".format(purchase_result))
                     return FallbackIntentHandler().handle(handler_input)
-
-                return handler_input.response_builder.speak(speech).ask(
-                    reprompt).response
+                return (
+                    handler_input.response_builder
+                        .speak(speech)
+                        .ask(reprompt)
+                        .response
+                )
             else:
                 logger.log("Connections.Response indicated failure. "
                            "Error: {}".format(
-                    handler_input.request_envelope.request.status.message))
+                               handler_input.request_envelope.request.status.message))
 
-                return handler_input.response_builder.speak(
-                    "There was an error handling your purchase request. "
-                    "Please try again or contact us for help").response
+                return (
+                    handler_input.response_builder
+                        .speak(
+                            "There was an error handling your purchase request. "
+                            "Please try again or contact us for help")
+                        .response
+                )
 
 class CancelResponseHandler(AbstractRequestHandler):
     """This handles the Connections.Response event after a cancel occurs."""
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
         return (is_request_type("Connections.Response")(handler_input) and
@@ -637,133 +755,117 @@ class CancelResponseHandler(AbstractRequestHandler):
     def handle(self, handler_input):
         # type: (HandlerInput) -> Response
         logger.info("In CancelResponseHandler")
-        in_skill_response = in_skill_product_response(handler_input)
-        product_id = handler_input.request_envelope.request.payload.get(
+        in_skill_response=in_skill_product_response(handler_input)
+        product_id=handler_input.request_envelope.request.payload.get(
             "productId")
 
         if in_skill_response:
-            product = [l for l in in_skill_response.in_skill_products
+            product=[l for l in in_skill_response.in_skill_products
                        if l.product_id == product_id]
             logger.info("Product = {}".format(str(product)))
             if handler_input.request_envelope.request.status.code == "200":
-                speech = None
-                reprompt = None
-                purchase_result = handler_input.request_envelope.request.payload.get(
-                        "purchaseResult")
-                purchasable = product[0].purchasable
+                speech=None
+                reprompt=None
+                purchase_result=handler_input.request_envelope.request.payload.get(
+                    "purchaseResult")
+                purchasable=product[0].purchasable
                 if purchase_result == PurchaseResult.ACCEPTED.value:
-                    speech = ("You have successfully cancelled your "
+                    speech=("You have successfully cancelled your "
                               "subscription. {}".format(
-                        get_random_yes_no_question()))
-                    reprompt = get_random_yes_no_question()
+                                  get_random_yes_no_question()))
+                    reprompt=get_random_yes_no_question()
 
                 if purchase_result == PurchaseResult.DECLINED.value:
                     if purchasable == PurchasableState.PURCHASABLE:
-                        speech = ("You don't currently have a "
-                              "subscription. {}".format(
-                            get_random_yes_no_question()))
+                        speech=("You don't currently have a "
+                                  "subscription. {}".format(
+                                      get_random_yes_no_question()))
                     else:
-                        speech = get_random_yes_no_question()
-                    reprompt = get_random_yes_no_question()
+                        speech=get_random_yes_no_question()
+                    reprompt=get_random_yes_no_question()
 
-                return handler_input.response_builder.speak(speech).ask(
-                    reprompt).response
+                return (
+                    handler_input.response_builder
+                        .speak(speech)
+                        .ask(reprompt)
+                        .response
+                )
             else:
                 logger.log("Connections.Response indicated failure. "
                            "Error: {}".format(
-                    handler_input.request_envelope.request.status.message))
+                               handler_input.request_envelope.request.status.message))
 
-                return handler_input.response_builder.speak(
-                        "There was an error handling your cancellation "
-                        "request. Please try again or contact us for "
-                        "help").response
-
-class UpsellResponseHandler(AbstractRequestHandler):
-    """This handles the Connections.Response event after an upsell occurs."""
-    def can_handle(self, handler_input):
-        # type: (HandlerInput) -> bool
-        return (is_request_type("Connections.Response")(handler_input) and
-                handler_input.request_envelope.request.name == "Upsell")
-
-    def handle(self, handler_input):
-        # type: (HandlerInput) -> Response
-        logger.info("In UpsellResponseHandler")
-
-        if handler_input.request_envelope.request.status.code == "200":
-            if handler_input.request_envelope.request.payload.get(
-                    "purchaseResult") == PurchaseResult.DECLINED.value:
-                speech = ("Ok. Here's a random fact: {} {}".format(
-                    get_random_from_list(all_facts),
-                    get_random_yes_no_question()))
-                reprompt = get_random_yes_no_question()
-                return handler_input.response_builder.speak(speech).ask(
-                    reprompt).response
-        else:
-            logger.log("Connections.Response indicated failure. "
-                       "Error: {}".format(
-                handler_input.request_envelope.request.status.message))
-            return handler_input.response_builder.speak(
-                "There was an error handling your Upsell request. "
-                "Please try again or contact us for help.").response
+                return (
+                    handler_input.response_builder
+                        .speak(
+                            "There was an error handling your cancellation "
+                            "request. Please try again or contact us for "
+                            "help"
+                        )
+                        .response
+                )
 
 class HelpIntentHandler(AbstractRequestHandler):
     """Handler for help message to users."""
+
     def can_handle(self, handler_input):
         return is_intent_name("AMAZON.HelpIntent")(handler_input)
 
     def handle(self, handler_input):
         # type: (HandlerInput) -> Response
         logger.info("In HelpIntentHandler")
-        in_skill_response = in_skill_product_response(handler_input)
 
-        if isinstance(in_skill_response, InSkillProductsResponse):
-            speech = (
-                "To hear a random fact you can say "
-                "'Tell me a fact', or to hear about the premium categories "
-                "for purchase, say 'What can I buy'. For help, say , "
-                "'Help me'... So, what can I help you with?"
-            )
-            reprompt = "I didn't catch that. What can I help you with?"
-        else:
-            logger.info("Error calling InSkillProducts API: {}".format(
-                in_skill_response.message))
-            speech = "Something went wrong in loading your purchase history."
-            reprompt = speech
+        speech=(
+            "To hear a random fact you can say "
+            "'Tell me a fact', or to hear about the premium categories "
+            "for purchase, say 'What can I buy'. For help, say , "
+            "'Help me'... So, what can I help you with?"
+        )
+        reprompt="I didn't catch that. What can I help you with?"
 
-        return handler_input.response_builder.speak(speech).ask(
-            reprompt).response
+        return (
+            handler_input.response_builder
+            .speak(speech)
+            .ask(reprompt)
+            .response
+        )
 
 
 class FallbackIntentHandler(AbstractRequestHandler):
     """Handler for fallback intent.
 
     2018-July-12: AMAZON.FallbackIntent is currently available in all
-    English locales. This handler will not be triggered except in that
+    English locales. This handler will not be triggered except in those
     locale, so it can be safely deployed for any locale. More info
     on the fallback intent can be found here: https://developer.amazon.com/docs/custom-skills/standard-built-in-intents.html#fallback
     """
+
     def can_handle(self, handler_input):
         return is_intent_name("AMAZON.FallbackIntent")(handler_input)
 
     def handle(self, handler_input):
         # type: (HandlerInput) -> Response
         logger.info("In FallbackIntentHandler")
-        speech = (
-                "Sorry. I cannot help with that. I can help you with "
-                "some facts. "
-                "To hear a random fact you can say "
-                "'Tell me a fact', or to hear about the premium categories "
-                "for purchase, say 'What can I buy'. For help, say , "
-                "'Help me'... So, what can I help you with?"
-            )
-        reprompt = "I didn't catch that. What can I help you with?"
+        speech=(
+            "Sorry. I cannot help with that. I can help you with "
+            "some facts. "
+            "To hear a random fact you can say "
+            "'Tell me a fact', or to hear about the premium categories "
+            "for purchase, say 'What can I buy'. For help, say , "
+            "'Help me'... So, what can I help you with?"
+        )
+        reprompt="I didn't catch that. What can I help you with?"
 
-        return handler_input.response_builder.speak(speech).ask(
-            reprompt).response
-
+        return (
+            handler_input.response_builder
+                .speak(speech)
+                .ask(reprompt)
+                .response
+        )
 
 class SessionEndedHandler(AbstractRequestHandler):
     """Handler for session end request, stop or cancel intents."""
+
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
         return (is_request_type("SessionEndedRequest")(handler_input) or
@@ -773,12 +875,18 @@ class SessionEndedHandler(AbstractRequestHandler):
     def handle(self, handler_input):
         # type: (HandlerInput) -> Response
         logger.info("In SessionEndedHandler")
-        return handler_input.response_builder.speak(
-            get_random_goodbye()).set_should_end_session(True).response
+        return (
+            handler_input.response_builder
+                .speak(get_random_goodbye())
+                .set_should_end_session(True)
+                .response
+        )
 
 # Skill Exception Handler
+
 class CatchAllExceptionHandler(AbstractExceptionHandler):
     """One exception handler to catch all exceptions."""
+
     def can_handle(self, handler_input, exception):
         # type: (HandlerInput, Exception) -> bool
         return True
@@ -787,36 +895,69 @@ class CatchAllExceptionHandler(AbstractExceptionHandler):
         # type: (HandlerInput, Exception) -> Response
         logger.error(exception, exc_info=True)
 
-        speech = "Sorry, I can't understand the command. Please try again!!"
-        handler_input.response_builder.speak(speech).ask(speech)
-
-        return handler_input.response_builder.response
+        speech="Sorry, I can't understand the command. Please try again!!"
+        
+        return (
+            handler_input.response_builder
+                .speak(speech)
+                .ask(speech)
+                .response
+        )
 
 # Request and Response Loggers
-class RequestLogger(AbstractRequestInterceptor):
+class EntitledProductsCheckInterceptor(AbstractRequestInterceptor):
+    """queries monetization service for entitled products"""
+
+    def process(self, handler_input):
+        # type: (HandlerInput) -> None
+        logger.info("Starting Entitled Product Check")
+        if is_new_session(handler_input.request_envelope):
+            # new session, check to see what products are already owned.
+            try:
+                logger.info("new session, so see what is entitled")
+                locale = handler_input.request_envelope.request.locale
+                ms = handler_input.service_client_factory.get_monetization_service()
+                result = ms.get_in_skill_products(locale, )
+                entitled_products = get_all_entitled_products(result.in_skill_products)
+                if entitled_products:
+                    session_attributes = handler_input.attributes_manager.session_attributes
+                    session_attributes["entitledProducts"] = entitled_products
+            except Exception as error:
+                logger.info("Error calling InSkillProducts API: {}".format(error))
+                raise
+        else:
+            logger.info("not a new session, deserialize if needed")
+            session_attributes = handler_input.attributes_manager.session_attributes
+            entitled_products = session_attributes.get("entitledProducts", None)
+            if entitled_products:
+                d = DefaultSerializer()
+                entitled_products = json.dumps(entitled_products)
+                session_attributes["entitledProducts"] = d.deserialize(
+                    entitled_products,
+                    'list[ask_sdk_model.services.monetization.in_skill_product.InSkillProduct]')
+
+class RequestLoggerInterceptor(AbstractRequestInterceptor):
     """Log the request envelope."""
+
     def process(self, handler_input):
         # type: (HandlerInput) -> None
         logger.info("Request Envelope: {}".format(
             handler_input.request_envelope))
 
-class ResponseLogger(AbstractResponseInterceptor):
+class ResponseLoggerInterceptor(AbstractResponseInterceptor):
     """Log the response envelope."""
+
     def process(self, handler_input, response):
         # type: (HandlerInput, Response) -> None
         logger.info("Response: {}".format(response))
 
-
-sb = StandardSkillBuilder()
-
+sb=StandardSkillBuilder()
 sb.add_request_handler(LaunchRequestHandler())
-sb.add_request_handler(GetFactHandler())
 sb.add_request_handler(YesHandler())
 sb.add_request_handler(NoHandler())
 sb.add_request_handler(GetCategoryFactHandler())
 sb.add_request_handler(BuyResponseHandler())
 sb.add_request_handler(CancelResponseHandler())
-sb.add_request_handler(UpsellResponseHandler())
 sb.add_request_handler(ShoppingHandler())
 sb.add_request_handler(ProductDetailHandler())
 sb.add_request_handler(BuyHandler())
@@ -826,7 +967,8 @@ sb.add_request_handler(FallbackIntentHandler())
 sb.add_request_handler(SessionEndedHandler())
 
 sb.add_exception_handler(CatchAllExceptionHandler())
-sb.add_global_request_interceptor(RequestLogger())
-sb.add_global_response_interceptor(ResponseLogger())
-
-lambda_handler = sb.lambda_handler()
+sb.add_global_request_interceptor(RequestLoggerInterceptor())
+sb.add_global_request_interceptor(EntitledProductsCheckInterceptor())
+sb.add_global_response_interceptor(ResponseLoggerInterceptor())
+sb.custom_user_agent = "sample/premium-fact/v1"
+lambda_handler=sb.lambda_handler()
