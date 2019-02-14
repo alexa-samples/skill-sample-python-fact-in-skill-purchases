@@ -467,7 +467,7 @@ class GetCategoryFactHandler(AbstractRequestHandler):
                     ).response
 
 
-class ShoppingHandler(AbstractRequestHandler):
+class WhatCanIBuyHandler(AbstractRequestHandler):
     """
     Following handler demonstrates how skills can handle user requests to
     discover what products are available for purchase in-skill.
@@ -476,11 +476,11 @@ class ShoppingHandler(AbstractRequestHandler):
 
     def can_handle(self, handler_input):
         # type: (HandlerInput) -> bool
-        return is_intent_name("ShoppingIntent")(handler_input)
+        return is_intent_name("WhatCanIBuyIntent")(handler_input)
 
     def handle(self, handler_input):
         # type: (HandlerInput) -> Response
-        logger.info("In ShoppingHandler")
+        logger.info("In WhatCanIBuyHandler")
 
         # Inform the user about what products are available for purchase
         in_skill_response=in_skill_product_response(handler_input)
@@ -653,7 +653,6 @@ class CancelSubscriptionHandler(AbstractRequestHandler):
                     token="correlationToken")
             ).response
 
-
 class BuyResponseHandler(AbstractRequestHandler):
     """This handles the Connections.Response event after a buy occurs."""
 
@@ -735,7 +734,6 @@ class BuyResponseHandler(AbstractRequestHandler):
                 logger.log("Connections.Response indicated failure. "
                            "Error: {}".format(
                                handler_input.request_envelope.request.status.message))
-
                 return (
                     handler_input.response_builder
                         .speak(
@@ -958,7 +956,7 @@ sb.add_request_handler(NoHandler())
 sb.add_request_handler(GetCategoryFactHandler())
 sb.add_request_handler(BuyResponseHandler())
 sb.add_request_handler(CancelResponseHandler())
-sb.add_request_handler(ShoppingHandler())
+sb.add_request_handler(WhatCanIBuyHandler())
 sb.add_request_handler(ProductDetailHandler())
 sb.add_request_handler(BuyHandler())
 sb.add_request_handler(CancelSubscriptionHandler())
