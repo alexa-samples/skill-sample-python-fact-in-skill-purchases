@@ -719,7 +719,7 @@ class BuyResponseHandler(AbstractRequestHandler):
                     # may have access to more than what was asked for, but give them a random
                     # fact from the product they asked to buy
                     logger.info("Already purchased product")
-                    return YesHandler.handle(handler_input)
+                    return YesHandler().handle(handler_input)
                 else:
                     # Invalid purchase result value
                     logger.info("Purchase result: {}".format(purchase_result))
@@ -915,7 +915,7 @@ class EntitledProductsCheckInterceptor(AbstractRequestInterceptor):
                 logger.info("new session, so see what is entitled")
                 locale = handler_input.request_envelope.request.locale
                 ms = handler_input.service_client_factory.get_monetization_service()
-                result = ms.get_in_skill_products(locale, )
+                result = ms.get_in_skill_products(accept_language=locale)
                 entitled_products = get_all_entitled_products(result.in_skill_products)
                 if entitled_products:
                     session_attributes = handler_input.attributes_manager.session_attributes
